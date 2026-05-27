@@ -1,0 +1,30 @@
+{
+  "name": "codews-cli",
+  "version": "1.0.0",
+  "description": "A configuration-driven multi-repo workspace manager.",
+  "main": "index.js",
+  "bin": {
+    "codews": "./bin/codews.js"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Dev-Wiki/CodeWorkspace.git"
+  },
+  "keywords": [
+    "cli",
+    "git",
+    "workspace",
+    "multi-repo",
+    "monorepo",
+    "codews"
+  ],
+  "author": "",
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "commander": "^14.0.3"
+  }
+}
