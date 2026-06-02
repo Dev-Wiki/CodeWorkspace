@@ -5,11 +5,12 @@ const os = require('os');
 function loadConfig(envName) {
     const filename = envName.endsWith('.json') ? envName : `${envName}.json`;
     let currentDir = process.cwd();
+    const globalPath = path.join(os.homedir(), '.codews', filename);
 
     // 1. Local Lookup (up to root)
     while (true) {
         const localPath = path.join(currentDir, '.codews', filename);
-        if (fs.existsSync(localPath)) {
+        if (fs.existsSync(localPath) && localPath !== globalPath) {
             return { configPath: localPath, workspaceRoot: currentDir };
         }
         const parentDir = path.dirname(currentDir);
@@ -18,7 +19,6 @@ function loadConfig(envName) {
     }
 
     // 2. Global Lookup
-    const globalPath = path.join(os.homedir(), '.codews', filename);
     if (fs.existsSync(globalPath)) {
         return { configPath: globalPath, workspaceRoot: process.cwd() };
     }
