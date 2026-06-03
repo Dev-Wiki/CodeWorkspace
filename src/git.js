@@ -50,6 +50,7 @@ async function checkoutWorkspace(workspace) {
         const branch = config.branch;
         const commit = config.commit;
         const url = config.url;
+        const depth = config.depth !== undefined ? config.depth : 1;
 
         console.log(`Processing ${repoName}...`);
 
@@ -61,7 +62,10 @@ async function checkoutWorkspace(workspace) {
             console.log(`Cloning ${repoName}...`);
             // Ensure parent directory exists
             fs.mkdirSync(path.dirname(repoPath), { recursive: true });
-            runCommand(`git clone ${url} -b ${branch} ${path.basename(repoPath)}`, path.dirname(repoPath));
+            const cloneCmd = depth > 0 
+                ? `git clone --depth ${depth} --single-branch --no-tags ${url} -b ${branch} ${path.basename(repoPath)}`
+                : `git clone ${url} -b ${branch} ${path.basename(repoPath)}`;
+            runCommand(cloneCmd, path.dirname(repoPath));
             if (commit) {
                 console.log(`Checking out specific commit ${commit} in ${repoName}...`);
                 runCommand(`git checkout ${commit}`, repoPath);

@@ -117,6 +117,7 @@ codews switch ProjectA/release_v1.0
       "path": "RepoX/common/base/RepoY_Nested",
       "branch": "release_1.0",
       "commit": "a1b2c3d",
+      "depth": 1,
       "post_hooks": [
         "powershell -Command \"...\""
       ]
@@ -127,6 +128,7 @@ codews switch ProjectA/release_v1.0
 **说明**：
 - `branch`：检出的分支名称。
 - `commit` (高级)：支持直接配置 `commit` Hash 值，引擎会光速检出该 Detached 节点。
+- `depth` (可选)：克隆深度，默认值为 `1`（开启浅克隆，仅拉取指定分支单层历史记录）。若需拉取完整提交历史，请配置为 `0`。
 - `post_hooks`：切换完分支后需要自动执行的 Shell 脚本指令。
 
 ### 继承重写示例 (`bugfix_01.json`)
