@@ -1,6 +1,12 @@
 const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const readline = require('readline');
+
+function promptUser(query) {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    return new Promise(resolve => rl.question(query, ans => { rl.close(); resolve(ans); }));
+}
 
 function runCommand(cmd, cwd, streamOutput = false) {
     try {
@@ -58,7 +64,28 @@ async function checkoutWorkspace(workspace) {
         const branch = config.branch;
         const commit = config.commit;
         const url = config.url;
-        const depth = config.depth !== undefined ? config.depth : 1;
+        let depth = config.depth !== undefined ? config.depth : (commit ? 0 : 1);
+
+        if (commit && config.depth !== undefined && config.depth > 0) {
+            if (process.stdout.isTTY && !process.env.CI) {
+                console.warn(`\n[WARNING] 仓库 ${repoName} 同时指定了具体 commit 与 depth:${config.depth}，这极易导致克隆后找不到历史树。`);
+                let ans = '';
+                while (!['1', '2', '3'].includes(ans)) {
+                    ans = await promptUser(`请选择处理方式：\n[1] 尝试精准浅拉取（若远端拒绝则自动转全量）(强烈推荐)\n[2] 放弃浅拉取，直接走全量克隆 (最保守)\n[3] 终止操作\n请输入 1/2/3: `);
+                    ans = ans.trim();
+                }
+                if (ans === '1') {
+                    depth = 'targeted';
+                } else if (ans === '2') {
+                    depth = 0;
+                } else if (ans === '3') {
+                    throw new Error('User aborted.');
+                }
+            } else {
+                console.warn(`[WARNING] 非交互环境：检测到 ${repoName} 存在冲突配置 (commit + depth>0)，自动降级为全量克隆以保安全。`);
+                depth = 0;
+            }
+        }
 
         console.log(`[${index}/${total}] Processing ${repoName}...`);
 
@@ -70,6 +97,23 @@ async function checkoutWorkspace(workspace) {
             console.log(`Cloning ${repoName}...`);
             // Ensure parent directory exists
             fs.mkdirSync(path.dirname(repoPath), { recursive: true });
+
+            if (depth === 'targeted') {
+                runCommand('git init', repoPath);
+                runCommand(`git remote add origin ${url}`, repoPath);
+                try {
+                    console.log(`Attempting targeted shallow fetch for commit ${commit}...`);
+                    runCommand(`git fetch --depth 1 origin ${commit}`, repoPath, true);
+                    runCommand(`git checkout ${commit}`, repoPath);
+                    continue;
+                } catch (e) {
+                    console.warn(`[WARN] 服务端拒绝了精确游离拉取，开始执行全量兜底...`);
+                    fs.rmSync(repoPath, { recursive: true, force: true });
+                    fs.mkdirSync(path.dirname(repoPath), { recursive: true });
+                    depth = 0;
+                }
+            }
+
             const cloneCmd = depth > 0 
                 ? `git clone --depth ${depth} --single-branch --no-tags ${url} -b ${branch} ${path.basename(repoPath)}`
                 : `git clone ${url} -b ${branch} ${path.basename(repoPath)}`;
