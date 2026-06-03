@@ -2,9 +2,12 @@ const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
-function runCommand(cmd, cwd) {
+function runCommand(cmd, cwd, streamOutput = false) {
     try {
-        return execSync(cmd, { cwd, encoding: 'utf8', stdio: 'pipe' }).trim();
+        const options = { cwd, encoding: 'utf8' };
+        options.stdio = (streamOutput && !process.env.CI) ? 'inherit' : 'pipe';
+        const result = execSync(cmd, options);
+        return result ? result.trim() : '';
     } catch (err) {
         throw new Error(`Command failed: ${cmd}\nIn directory: ${cwd}\nError: ${err.stderr || err.message}`);
     }
@@ -45,14 +48,19 @@ async function checkDirty(workspace, options = {}) {
 }
 
 async function checkoutWorkspace(workspace) {
-    for (const [repoName, config] of Object.entries(workspace.repos)) {
+    const reposEntries = Object.entries(workspace.repos);
+    const total = reposEntries.length;
+    let index = 0;
+
+    for (const [repoName, config] of reposEntries) {
+        index++;
         const repoPath = path.resolve(workspace.workspaceRoot, config.path || repoName);
         const branch = config.branch;
         const commit = config.commit;
         const url = config.url;
         const depth = config.depth !== undefined ? config.depth : 1;
 
-        console.log(`Processing ${repoName}...`);
+        console.log(`[${index}/${total}] Processing ${repoName}...`);
 
         if (!fs.existsSync(repoPath)) {
             if (!url) {
@@ -65,7 +73,7 @@ async function checkoutWorkspace(workspace) {
             const cloneCmd = depth > 0 
                 ? `git clone --depth ${depth} --single-branch --no-tags ${url} -b ${branch} ${path.basename(repoPath)}`
                 : `git clone ${url} -b ${branch} ${path.basename(repoPath)}`;
-            runCommand(cloneCmd, path.dirname(repoPath));
+            runCommand(cloneCmd, path.dirname(repoPath), true);
             if (commit) {
                 console.log(`Checking out specific commit ${commit} in ${repoName}...`);
                 runCommand(`git checkout ${commit}`, repoPath);
@@ -73,12 +81,12 @@ async function checkoutWorkspace(workspace) {
         } else {
             const target = commit ? commit : branch;
             console.log(`Fetching and checking out ${target} in ${repoName}...`);
-            runCommand('git fetch', repoPath);
+            runCommand('git fetch', repoPath, true);
             runCommand(`git checkout ${target}`, repoPath);
             
             if (!commit) {
                 try {
-                    runCommand('git pull', repoPath);
+                    runCommand('git pull', repoPath, true);
                 } catch(e) {
                     console.warn(`[WARN] git pull failed for ${repoName} (might be detached or not tracking upstream)`);
                 }
