@@ -42,6 +42,7 @@ function run(argv) {
         .description('Switch workspace to a specific environment')
         .option('--stash', 'Auto-stash changes before switching')
         .option('--force', 'Force reset and clean changes before switching')
+        .option('--full', 'Force full clone (depth=0) for all repositories, overriding shallow configurations')
         .action(async (env, options) => {
             try {
                 const configResult = loadConfig(env);
@@ -60,7 +61,7 @@ function run(argv) {
                 }
 
                 console.log(`Switching to environment: ${env}`);
-                await checkoutWorkspace(workspace);
+                await checkoutWorkspace(workspace, options);
                 console.log('Switch completed successfully.');
             } catch (err) {
                 console.error('Switch failed:', err.message);

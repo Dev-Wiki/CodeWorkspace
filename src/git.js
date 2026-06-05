@@ -19,6 +19,26 @@ function runCommand(cmd, cwd, streamOutput = false) {
     }
 }
 
+function getRealDirtyStatus(repoPath) {
+    const status = runCommand('git status --porcelain', repoPath);
+    if (!status) return "";
+    const statusLines = status.split('\n').filter(line => line.trim().length > 0);
+    const realDirtyLines = statusLines.filter(line => {
+        if (line.startsWith('?? ')) {
+            const filePath = line.substring(3).trim();
+            const fullPath = path.resolve(repoPath, filePath);
+            try {
+                if (fs.existsSync(path.join(fullPath, '.git'))) {
+                    console.log(`[INFO] Auto-ignoring nested git repository: ${filePath}`);
+                    return false;
+                }
+            } catch (e) {}
+        }
+        return true;
+    });
+    return realDirtyLines.join('\n');
+}
+
 async function checkDirty(workspace, options = {}) {
     let allClean = true;
     for (const [repoName, config] of Object.entries(workspace.repos)) {
@@ -27,7 +47,7 @@ async function checkDirty(workspace, options = {}) {
             continue; // Not cloned yet, so it can't be dirty
         }
         try {
-            const status = runCommand('git status --porcelain', repoPath);
+            const status = getRealDirtyStatus(repoPath);
             if (status.length > 0) {
                 if (options.force) {
                     console.log(`[FORCE] Hard resetting ${repoName}...`);
@@ -35,7 +55,7 @@ async function checkDirty(workspace, options = {}) {
                 } else if (options.stash) {
                     console.log(`[STASH] Auto-stashing changes in ${repoName}...`);
                     runCommand('git stash push -u -m "codews auto stash before switch"', repoPath);
-                    const newStatus = runCommand('git status --porcelain', repoPath);
+                    const newStatus = getRealDirtyStatus(repoPath);
                     if (newStatus.length > 0) {
                         console.error(`[ERROR] Failed to completely stash ${repoName}:\n${newStatus}`);
                         allClean = false;
@@ -53,7 +73,7 @@ async function checkDirty(workspace, options = {}) {
     return allClean;
 }
 
-async function checkoutWorkspace(workspace) {
+async function checkoutWorkspace(workspace, options = {}) {
     const reposEntries = Object.entries(workspace.repos);
     const total = reposEntries.length;
     let index = 0;
@@ -65,8 +85,9 @@ async function checkoutWorkspace(workspace) {
         const commit = config.commit;
         const url = config.url;
         let depth = config.depth !== undefined ? config.depth : (commit ? 0 : 1);
+        if (options.full) depth = 0;
 
-        if (commit && config.depth !== undefined && config.depth > 0) {
+        if (commit && config.depth !== undefined && depth > 0) {
             if (process.stdout.isTTY && !process.env.CI) {
                 console.warn(`\n[WARNING] 仓库 ${repoName} 同时指定了具体 commit 与 depth:${config.depth}，这极易导致克隆后找不到历史树。`);
                 let ans = '';
@@ -163,7 +184,7 @@ function statusWorkspace(workspace = null) {
                     branch = runCommand('git branch --show-current', repoPath);
                 } catch(e) {}
                 
-                const dirty = runCommand('git status --porcelain', repoPath);
+                const dirty = getRealDirtyStatus(repoPath);
                 const statusStr = dirty.length > 0 ? '[DIRTY]' : '[CLEAN]';
                 
                 let branchStr = "";
@@ -189,7 +210,7 @@ function statusWorkspace(workspace = null) {
             if (fs.existsSync(path.join(repoPath, '.git'))) {
                 try {
                     const branch = runCommand('git branch --show-current', repoPath);
-                    const dirty = runCommand('git status --porcelain', repoPath);
+                    const dirty = getRealDirtyStatus(repoPath);
                     const statusStr = dirty.length > 0 ? '[DIRTY]' : '[CLEAN]';
                     console.log(`${displayName.padEnd(20)} ${statusStr.padEnd(9)} Branch: ${branch}`);
                 } catch (err) {
