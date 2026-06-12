@@ -146,7 +146,15 @@ async function checkoutWorkspace(workspace, options = {}) {
         } else {
             const target = commit ? commit : branch;
             console.log(`Fetching and checking out ${target} in ${repoName}...`);
-            runCommand('git fetch', repoPath, true);
+            
+            if (!commit) {
+                try {
+                    // 为了防止该仓库是以 --single-branch 克隆的，在此显式将目标分支加入 fetch 列表
+                    runCommand(`git remote set-branches --add origin ${target}`, repoPath, true);
+                } catch(e) {}
+            }
+            
+            runCommand('git fetch origin', repoPath, true);
             runCommand(`git checkout ${target}`, repoPath);
             
             if (!commit) {
