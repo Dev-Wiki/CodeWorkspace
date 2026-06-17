@@ -119,9 +119,15 @@ function run(argv) {
             console.log(`Root: ${workspace.workspaceRoot}`);
             console.log('\nRepositories:');
             for (const [repoName, config] of Object.entries(workspace.repos)) {
-                const branch = config.branch || 'N/A';
                 const pathStr = config.path || repoName;
-                console.log(`  - ${repoName.padEnd(20)} => Branch: ${branch.padEnd(30)} Path: ${pathStr}`);
+                if (config.commit) {
+                    const shortCommit = config.commit.substring(0, 7);
+                    const branchRef = config.branch ? ` (base: ${config.branch})` : '';
+                    console.log(`  - ${repoName.padEnd(20)} => Commit: ${shortCommit}${branchRef} Path: ${pathStr}`);
+                } else {
+                    const branch = config.branch || 'N/A';
+                    console.log(`  - ${repoName.padEnd(20)} => Branch: ${branch.padEnd(30)} Path: ${pathStr}`);
+                }
             }
         });
 
