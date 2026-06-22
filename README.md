@@ -36,6 +36,7 @@ codews switch <env_name> [--stash] [--force] [--full]
 # --stash: 遇到未提交的代码自动静默执行 git stash
 # --force: 暴力覆盖，遇到未提交代码直接 git reset --hard 丢弃
 # --full: 全局覆写深度，强制所有仓库（无视 JSON 配置）走 depth=0 全量深克隆
+# *注：切换成功后，会自动输出各仓库的当前分支、最新 Commit Hash 及提交消息概览。*
 
 # 查看某个配置的具体详情（仓库、分支、映射路径等）
 codews show <env_name>
