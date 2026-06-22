@@ -36,7 +36,7 @@ function run(argv) {
     program
         .name('codews')
         .description('Workspace manager for multi-repo projects')
-        .version('1.0.0');
+        .version('1.2.0');
 
     program.command('switch <env>')
         .description('Switch workspace to a specific environment')
