@@ -243,4 +243,33 @@ function statusWorkspace(workspace = null) {
     }
 }
 
-module.exports = { checkDirty, checkoutWorkspace, statusWorkspace };
+function printSwitchSummary(workspace) {
+    console.log('\n--- Workspace Switch Summary ---');
+    for (const [repoName, config] of Object.entries(workspace.repos)) {
+        const repoPath = path.resolve(workspace.workspaceRoot, config.path || repoName);
+        if (!fs.existsSync(repoPath)) {
+            console.log(`${repoName.padEnd(20)} [MISSING] Not cloned`);
+            continue;
+        }
+        try {
+            let branch = 'Detached';
+            try {
+                const current = runCommand('git branch --show-current', repoPath);
+                if (current) branch = current;
+            } catch (e) {}
+
+            let logMsg = 'No commits yet';
+            try {
+                logMsg = runCommand('git log -1 --format="%h %s"', repoPath);
+            } catch (e) {}
+
+            console.log(`${repoName.padEnd(20)} Branch: ${branch.padEnd(15)}`);
+            console.log(`                     └─ ${logMsg}`);
+        } catch (err) {
+            console.log(`${repoName.padEnd(20)} [ERROR] Failed to retrieve info`);
+        }
+    }
+    console.log('--------------------------------\n');
+}
+
+module.exports = { checkDirty, checkoutWorkspace, statusWorkspace, printSwitchSummary };

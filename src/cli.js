@@ -1,6 +1,6 @@
 const { Command } = require('commander');
 const { loadConfig, getResolvedWorkspace, listConfigs } = require('./config');
-const { checkDirty, checkoutWorkspace, statusWorkspace } = require('./git');
+const { checkDirty, checkoutWorkspace, statusWorkspace, printSwitchSummary } = require('./git');
 const path = require('path');
 const fs = require('fs');
 
@@ -63,6 +63,7 @@ function run(argv) {
                 console.log(`Switching to environment: ${env}`);
                 await checkoutWorkspace(workspace, options);
                 console.log('Switch completed successfully.');
+                printSwitchSummary(workspace);
             } catch (err) {
                 console.error('Switch failed:', err.message);
                 process.exit(1);
