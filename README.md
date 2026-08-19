@@ -161,3 +161,7 @@ codews switch ProjectA/release_v1.0
 关于本工具的设计哲学（为何放弃 Rust）、系统架构演进，以及未来的 V2 可视化交互界面（TUI / VSCode 插件）规划，请参阅独立的架构白皮书：
 
 👉 [ARCHITECTURE.md](ARCHITECTURE.md)
+
+## 项目文档
+
+文档导航、维护规则与代码库审计入口见 [docs/README.md](docs/README.md)。
