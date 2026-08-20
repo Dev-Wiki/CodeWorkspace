@@ -23,11 +23,13 @@ Node.js CommonJS command-line application
 
 ## 已确认命令（人工维护）
 
-- **build**: `Unknown`
-- **test**: `Unknown`
-- **quick**: `Unknown`
-- **bugfix**: `Unknown`
-- **full**: `Unknown`
+- **build**: `N/A`（项目无独立编译或打包步骤）
+- **test**: `npm run harness:test`
+- **quick**: `npm run harness:quick`
+- **bugfix**: `npm run harness:bugfix`
+- **full**: `npm run harness:full`
+
+以上命令均在仓库根目录执行，适用于 Node.js CommonJS CLI，设备要求为 `none`。命令入口由 `package.json` 维护；测试使用 Node.js 内置 test runner，不依赖额外测试框架。
 
 复杂项目可为同一 Purpose 维护多条已确认记录。每条记录使用 `Purpose / Command / WorkingDirectory / Platform / Variant / Preconditions / DeviceRequirement / Shell / Environment / Evidence / Status`；简单项目继续使用上面的单值字段。
 
@@ -44,7 +46,4 @@ Node.js CommonJS command-line application
 - Version 1.2.0 is duplicated between package metadata and CLI registration.
 
 ## 需人工确认
-- `bugfix` 验证命令仍缺失，需人工补齐可信入口
-- build / test / quick / full 命令映射不完整，需人工确认最终入口
 - Confirm the trust model for local and global `.codews` files because repository URLs, revisions, paths, and post_hooks reach shell and filesystem boundaries.
-- Define real quick, bugfix, and full verification commands before relying on automated code changes.

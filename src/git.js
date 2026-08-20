@@ -39,10 +39,61 @@ function getRealDirtyStatus(repoPath) {
     return realDirtyLines.join('\n');
 }
 
+function canonicalizePotentialPath(targetPath) {
+    let existingPath = targetPath;
+    const missingSegments = [];
+
+    while (!fs.existsSync(existingPath)) {
+        const parentPath = path.dirname(existingPath);
+        if (parentPath === existingPath) {
+            throw new Error(`Unable to resolve repository path: ${targetPath}`);
+        }
+        missingSegments.unshift(path.basename(existingPath));
+        existingPath = parentPath;
+    }
+
+    return path.resolve(fs.realpathSync(existingPath), ...missingSegments);
+}
+
+function resolveWorkspaceRepoEntries(workspace) {
+    if (typeof workspace.workspaceRoot !== 'string') {
+        throw new Error('Workspace root must be a filesystem path.');
+    }
+
+    const resolvedWorkspaceRoot = path.resolve(workspace.workspaceRoot);
+    if (!fs.existsSync(resolvedWorkspaceRoot) || !fs.statSync(resolvedWorkspaceRoot).isDirectory()) {
+        throw new Error(`Workspace root does not exist or is not a directory: ${resolvedWorkspaceRoot}`);
+    }
+    const canonicalWorkspaceRoot = fs.realpathSync(resolvedWorkspaceRoot);
+
+    return Object.entries(workspace.repos).map(([repoName, config]) => {
+        const configuredPath = config.path || repoName;
+        if (typeof configuredPath !== 'string') {
+            throw new Error(`Repository path for ${JSON.stringify(repoName)} must be a string.`);
+        }
+
+        const candidatePath = path.resolve(canonicalWorkspaceRoot, configuredPath);
+        const repoPath = canonicalizePotentialPath(candidatePath);
+        const relativePath = path.relative(canonicalWorkspaceRoot, repoPath);
+        const escapesWorkspace = relativePath === '..'
+            || relativePath.startsWith(`..${path.sep}`)
+            || path.isAbsolute(relativePath);
+
+        if (escapesWorkspace) {
+            throw new Error(
+                `Repository path for ${JSON.stringify(repoName)} escapes workspace root: `
+                + `${JSON.stringify(configuredPath)} resolves to ${JSON.stringify(repoPath)}`
+            );
+        }
+
+        return { repoName, config, repoPath };
+    });
+}
+
 async function checkDirty(workspace, options = {}) {
     let allClean = true;
-    for (const [repoName, config] of Object.entries(workspace.repos)) {
-        const repoPath = path.resolve(workspace.workspaceRoot, config.path || repoName);
+    const repoEntries = resolveWorkspaceRepoEntries(workspace);
+    for (const { repoName, repoPath } of repoEntries) {
         if (!fs.existsSync(repoPath)) {
             continue; // Not cloned yet, so it can't be dirty
         }
@@ -74,13 +125,12 @@ async function checkDirty(workspace, options = {}) {
 }
 
 async function checkoutWorkspace(workspace, options = {}) {
-    const reposEntries = Object.entries(workspace.repos);
+    const reposEntries = resolveWorkspaceRepoEntries(workspace);
     const total = reposEntries.length;
     let index = 0;
 
-    for (const [repoName, config] of reposEntries) {
+    for (const { repoName, config, repoPath } of reposEntries) {
         index++;
-        const repoPath = path.resolve(workspace.workspaceRoot, config.path || repoName);
         const branch = config.branch;
         const commit = config.commit;
         const url = config.url;
@@ -179,8 +229,8 @@ async function checkoutWorkspace(workspace, options = {}) {
 function statusWorkspace(workspace = null) {
     if (workspace) {
         console.log(`Checking status against environment: ${workspace.name}\n`);
-        for (const [repoName, config] of Object.entries(workspace.repos)) {
-            const repoPath = path.resolve(workspace.workspaceRoot, config.path || repoName);
+        const repoEntries = resolveWorkspaceRepoEntries(workspace);
+        for (const { repoName, config, repoPath } of repoEntries) {
             if (!fs.existsSync(repoPath)) {
                 console.log(`${repoName.padEnd(20)} [MISSING]  Not cloned yet`);
                 continue;
@@ -245,8 +295,8 @@ function statusWorkspace(workspace = null) {
 
 function printSwitchSummary(workspace) {
     console.log('\n--- Workspace Switch Summary ---');
-    for (const [repoName, config] of Object.entries(workspace.repos)) {
-        const repoPath = path.resolve(workspace.workspaceRoot, config.path || repoName);
+    const repoEntries = resolveWorkspaceRepoEntries(workspace);
+    for (const { repoName, repoPath } of repoEntries) {
         if (!fs.existsSync(repoPath)) {
             console.log(`${repoName.padEnd(20)} [MISSING] Not cloned`);
             continue;

@@ -27,18 +27,41 @@ function loadConfig(envName) {
 }
 
 function getResolvedWorkspace(configResult) {
+    return resolveWorkspace(configResult, []);
+}
+
+function formatInheritanceChain(configPaths) {
+    const chainRoot = path.dirname(configPaths[0]);
+    return configPaths
+        .map(configPath => path.relative(chainRoot, configPath).replace(/\\/g, '/'))
+        .join(' -> ');
+}
+
+function resolveWorkspace(configResult, configStack) {
     const { configPath, workspaceRoot } = configResult;
-    const raw = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const resolvedConfigPath = path.resolve(configPath);
+    const cycleStart = configStack.indexOf(resolvedConfigPath);
+    if (cycleStart !== -1) {
+        const cycle = [...configStack.slice(cycleStart), resolvedConfigPath];
+        throw new Error(`Circular base config inheritance: ${formatInheritanceChain(cycle)}`);
+    }
+
+    const nextConfigStack = [...configStack, resolvedConfigPath];
+    const raw = JSON.parse(fs.readFileSync(resolvedConfigPath, 'utf8'));
     let resolvedRepos = {};
 
     if (raw.base) {
         const baseFilename = raw.base.endsWith('.json') ? raw.base : `${raw.base}.json`;
-        const basePath = path.resolve(path.dirname(configPath), baseFilename);
+        const basePath = path.resolve(path.dirname(resolvedConfigPath), baseFilename);
         if (fs.existsSync(basePath)) {
-            const baseWorkspace = getResolvedWorkspace({ configPath: basePath, workspaceRoot });
+            const baseWorkspace = resolveWorkspace(
+                { configPath: basePath, workspaceRoot },
+                nextConfigStack
+            );
             resolvedRepos = { ...baseWorkspace.repos };
         } else {
-            console.warn(`Warning: Base config not found at ${basePath}`);
+            const chain = formatInheritanceChain([...nextConfigStack, basePath]);
+            throw new Error(`Base config not found: ${basePath}. Inheritance chain: ${chain}`);
         }
     }
 
@@ -55,7 +78,7 @@ function getResolvedWorkspace(configResult) {
     }
 
     return {
-        name: raw.name || path.basename(configPath, '.json'),
+        name: raw.name || path.basename(resolvedConfigPath, '.json'),
         workspaceRoot: workspaceRoot,
         repos: resolvedRepos
     };
