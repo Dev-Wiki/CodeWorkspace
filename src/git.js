@@ -382,7 +382,34 @@ async function checkoutWorkspace(workspace, options = {}) {
     }
 }
 
-function statusWorkspace(workspace = null) {
+function findGitRepositories(rootPath) {
+    const repositories = [];
+
+    const scanDirectory = (directoryPath) => {
+        if (fs.existsSync(path.join(directoryPath, '.git'))) {
+            repositories.push(directoryPath);
+        }
+
+        let entries;
+        try {
+            entries = fs.readdirSync(directoryPath, { withFileTypes: true });
+        } catch (err) {
+            console.warn(`[WARN] Unable to scan directory ${directoryPath}: ${err.message}`);
+            return;
+        }
+
+        for (const entry of entries) {
+            if (entry.isDirectory() && entry.name !== '.git') {
+                scanDirectory(path.join(directoryPath, entry.name));
+            }
+        }
+    };
+
+    scanDirectory(rootPath);
+    return repositories;
+}
+
+function statusWorkspace(workspace = null, currentDir = process.cwd()) {
     if (workspace) {
         console.log(`Checking status against environment: ${workspace.name}\n`);
         const repoEntries = resolveWorkspaceRepoEntries(workspace);
@@ -433,7 +460,6 @@ function statusWorkspace(workspace = null) {
         return allMatching;
     } else {
         console.log(`Scanning current directory for Git repositories...\n`);
-        const currentDir = process.cwd();
 
         const checkAndPrint = (repoPath, displayName) => {
             if (fs.existsSync(path.join(repoPath, '.git'))) {
@@ -448,18 +474,10 @@ function statusWorkspace(workspace = null) {
             }
         };
 
-        // 1. Check current directory itself
-        if (fs.existsSync(path.join(currentDir, '.git'))) {
-            checkAndPrint(currentDir, path.basename(currentDir));
-        }
-
-        // 2. Check all immediate subdirectories
-        const entries = fs.readdirSync(currentDir, { withFileTypes: true });
-        for (const entry of entries) {
-            if (entry.isDirectory() && entry.name !== '.git') {
-                const repoPath = path.join(currentDir, entry.name);
-                checkAndPrint(repoPath, entry.name);
-            }
+        for (const repoPath of findGitRepositories(currentDir)) {
+            const relativePath = path.relative(currentDir, repoPath);
+            const displayName = relativePath || path.basename(currentDir);
+            checkAndPrint(repoPath, displayName);
         }
     }
 }

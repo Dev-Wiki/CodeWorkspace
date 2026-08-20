@@ -44,7 +44,7 @@ codews switch <env_name> [--stash] [--force] [--full]
 # 查看某个配置的具体详情（仓库、分支、映射路径等）
 codews show <env_name>
 
-# 检查当前目录下所有 Git 仓库的脏状态与当前分支
+# 递归检查当前目录下所有 Git 仓库的脏状态与当前分支（包含深层嵌套仓库）
 codews status
 
 # 检查当前目录是否严格符合某个环境配置（跨分支校验、缺漏校验、Hash比对）
