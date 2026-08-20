@@ -8,23 +8,25 @@ function promptUser(query) {
     return new Promise(resolve => rl.question(query, ans => { rl.close(); resolve(ans); }));
 }
 
-function runCommand(cmd, cwd, streamOutput = false) {
+function runHookCommand(command, cwd) {
     try {
-        const options = { cwd, encoding: 'utf8' };
-        options.stdio = (streamOutput && !process.env.CI) ? 'inherit' : 'pipe';
-        const result = execSync(cmd, options);
+        const result = execSync(command, { cwd, encoding: 'utf8', stdio: 'pipe' });
         return result ? result.trim() : '';
     } catch (err) {
-        throw new Error(`Command failed: ${cmd}\nIn directory: ${cwd}\nError: ${err.stderr || err.message}`);
+        throw new Error(
+            `Command failed: ${command}\nIn directory: ${cwd}\nError: ${err.stderr || err.message}`
+        );
     }
 }
 
-function runGitCommand(args, cwd) {
+function runGitCommand(args, cwd, streamOutput = false) {
     try {
         const result = execFileSync('git', args, {
             cwd,
             encoding: 'utf8',
-            stdio: ['ignore', 'pipe', 'pipe']
+            stdio: (streamOutput && !process.env.CI)
+                ? 'inherit'
+                : ['ignore', 'pipe', 'pipe']
         });
         return result ? result.trim() : '';
     } catch (err) {
@@ -136,7 +138,7 @@ class WorkspaceSwitchError extends Error {
 }
 
 function getRealDirtyStatus(repoPath) {
-    const status = runCommand('git status --porcelain', repoPath);
+    const status = runGitCommand(['status', '--porcelain'], repoPath);
     if (!status) return "";
     const statusLines = status.split('\n').filter(line => line.trim().length > 0);
     const realDirtyLines = statusLines.filter(line => {
@@ -216,8 +218,8 @@ async function checkDirty(workspace, options = {}) {
         try {
             if (options.force) {
                 console.log(`[FORCE] Hard resetting and cleaning ${repoName}...`);
-                runCommand('git reset --hard', repoPath);
-                runCommand('git clean -xdf', repoPath);
+                runGitCommand(['reset', '--hard'], repoPath);
+                runGitCommand(['clean', '-xdf'], repoPath);
                 const newStatus = getRealDirtyStatus(repoPath);
                 if (newStatus.length > 0) {
                     console.error(`[ERROR] Failed to completely clean ${repoName}:\n${newStatus}`);
@@ -230,7 +232,9 @@ async function checkDirty(workspace, options = {}) {
             if (status.length > 0) {
                 if (options.stash) {
                     console.log(`[STASH] Auto-stashing changes in ${repoName}...`);
-                    runCommand('git stash push -u -m "codews auto stash before switch"', repoPath);
+                    runGitCommand([
+                        'stash', 'push', '-u', '-m', 'codews auto stash before switch'
+                    ], repoPath);
                     const newStatus = getRealDirtyStatus(repoPath);
                     if (newStatus.length > 0) {
                         console.error(`[ERROR] Failed to completely stash ${repoName}:\n${newStatus}`);
@@ -308,12 +312,12 @@ async function checkoutWorkspace(workspace, options = {}) {
                 fs.mkdirSync(path.dirname(repoPath), { recursive: true });
 
                 if (depth === 'targeted') {
-                    runCommand('git init', repoPath);
-                    runCommand(`git remote add origin ${url}`, repoPath);
+                    runGitCommand(['init'], repoPath);
+                    runGitCommand(['remote', 'add', 'origin', url], repoPath);
                     try {
                         console.log(`Attempting targeted shallow fetch for commit ${commit}...`);
-                        runCommand(`git fetch --depth 1 origin ${commit}`, repoPath, true);
-                        runCommand(`git checkout ${commit}`, repoPath);
+                        runGitCommand(['fetch', '--depth', '1', 'origin', commit], repoPath, true);
+                        runGitCommand(['checkout', commit], repoPath);
                         continue;
                     } catch (e) {
                         console.warn(`[WARN] 服务端拒绝了精确游离拉取，开始执行全量兜底...`);
@@ -323,14 +327,18 @@ async function checkoutWorkspace(workspace, options = {}) {
                     }
                 }
 
-                const branchArg = branch ? ` -b ${branch}` : '';
-                const cloneCmd = depth > 0
-                    ? `git clone --depth ${depth} --single-branch --no-tags ${url}${branchArg} ${path.basename(repoPath)}`
-                    : `git clone ${url}${branchArg} ${path.basename(repoPath)}`;
-                runCommand(cloneCmd, path.dirname(repoPath), true);
+                const cloneArgs = ['clone'];
+                if (depth > 0) {
+                    cloneArgs.push('--depth', String(depth), '--single-branch', '--no-tags');
+                }
+                if (branch) {
+                    cloneArgs.push('-b', branch);
+                }
+                cloneArgs.push('--', url, path.basename(repoPath));
+                runGitCommand(cloneArgs, path.dirname(repoPath), true);
                 if (commit) {
                     console.log(`Checking out specific commit ${commit} in ${repoName}...`);
-                    runCommand(`git checkout ${commit}`, repoPath);
+                    runGitCommand(['checkout', commit], repoPath);
                 }
             } else {
                 const target = commit ? commit : branch;
@@ -339,16 +347,18 @@ async function checkoutWorkspace(workspace, options = {}) {
                 if (!commit) {
                     try {
                         // 为了防止该仓库是以 --single-branch 克隆的，在此显式将目标分支加入 fetch 列表
-                        runCommand(`git remote set-branches --add origin ${target}`, repoPath, true);
+                        runGitCommand([
+                            'remote', 'set-branches', '--add', 'origin', target
+                        ], repoPath, true);
                     } catch(e) {}
                 }
 
-                runCommand('git fetch origin', repoPath, true);
-                runCommand(`git checkout ${target}`, repoPath);
+                runGitCommand(['fetch', 'origin'], repoPath, true);
+                runGitCommand(['checkout', target], repoPath);
 
                 if (!commit) {
                     try {
-                        runCommand('git pull', repoPath, true);
+                        runGitCommand(['pull'], repoPath, true);
                     } catch(e) {
                         console.warn(`[WARN] git pull failed for ${repoName} (might be detached or not tracking upstream)`);
                     }
@@ -361,7 +371,7 @@ async function checkoutWorkspace(workspace, options = {}) {
                     console.log(`  > ${hook}`);
                     const hookResult = { command: hook, status: 'failed' };
                     mutationRecord.executedHooks.push(hookResult);
-                    runCommand(hook, repoPath);
+                    runHookCommand(hook, repoPath);
                     hookResult.status = 'completed';
                 }
             }
@@ -382,10 +392,10 @@ function statusWorkspace(workspace = null) {
                 continue;
             }
             try {
-                const headCommit = runCommand('git rev-parse HEAD', repoPath);
+                const headCommit = runGitCommand(['rev-parse', 'HEAD'], repoPath);
                 let branch = '';
                 try {
-                    branch = runCommand('git branch --show-current', repoPath);
+                    branch = runGitCommand(['branch', '--show-current'], repoPath);
                 } catch(e) {}
                 
                 const dirty = getRealDirtyStatus(repoPath);
@@ -413,7 +423,7 @@ function statusWorkspace(workspace = null) {
         const checkAndPrint = (repoPath, displayName) => {
             if (fs.existsSync(path.join(repoPath, '.git'))) {
                 try {
-                    const branch = runCommand('git branch --show-current', repoPath);
+                    const branch = runGitCommand(['branch', '--show-current'], repoPath);
                     const dirty = getRealDirtyStatus(repoPath);
                     const statusStr = dirty.length > 0 ? '[DIRTY]' : '[CLEAN]';
                     console.log(`${displayName.padEnd(20)} ${statusStr.padEnd(9)} Branch: ${branch}`);
@@ -450,13 +460,13 @@ function printSwitchSummary(workspace) {
         try {
             let branch = 'Detached';
             try {
-                const current = runCommand('git branch --show-current', repoPath);
+                const current = runGitCommand(['branch', '--show-current'], repoPath);
                 if (current) branch = current;
             } catch (e) {}
 
             let logMsg = 'No commits yet';
             try {
-                logMsg = runCommand('git log -1 --format="%h %s"', repoPath);
+                logMsg = runGitCommand(['log', '-1', '--format=%h %s'], repoPath);
             } catch (e) {}
 
             console.log(`${repoName.padEnd(20)} Branch: ${branch.padEnd(15)}`);

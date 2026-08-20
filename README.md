@@ -136,6 +136,8 @@ codews switch ProjectA/release_v1.0
 - `depth` (可选)：克隆深度，默认值为 `1`（开启浅克隆，仅拉取指定分支单层历史记录）。若需拉取完整提交历史，请配置为 `0`。
 - `post_hooks`：切换完分支后需要自动执行的 Shell 脚本指令。
 
+`path`、`url`、`branch` 和 `commit` 会作为独立参数传给 Git，包含空格或引号时无需额外添加 Shell 转义。`post_hooks` 明确属于 Shell 命令，仍按配置中的命令文本执行。
+
 ### 继承重写示例 (`bugfix_01.json`)
 利用 Base 机制实现局部覆盖（Override）：
 ```json
