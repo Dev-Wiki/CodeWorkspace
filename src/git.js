@@ -98,12 +98,21 @@ async function checkDirty(workspace, options = {}) {
             continue; // Not cloned yet, so it can't be dirty
         }
         try {
+            if (options.force) {
+                console.log(`[FORCE] Hard resetting and cleaning ${repoName}...`);
+                runCommand('git reset --hard', repoPath);
+                runCommand('git clean -xdf', repoPath);
+                const newStatus = getRealDirtyStatus(repoPath);
+                if (newStatus.length > 0) {
+                    console.error(`[ERROR] Failed to completely clean ${repoName}:\n${newStatus}`);
+                    allClean = false;
+                }
+                continue;
+            }
+
             const status = getRealDirtyStatus(repoPath);
             if (status.length > 0) {
-                if (options.force) {
-                    console.log(`[FORCE] Hard resetting ${repoName}...`);
-                    runCommand('git reset --hard', repoPath);
-                } else if (options.stash) {
+                if (options.stash) {
                     console.log(`[STASH] Auto-stashing changes in ${repoName}...`);
                     runCommand('git stash push -u -m "codews auto stash before switch"', repoPath);
                     const newStatus = getRealDirtyStatus(repoPath);
