@@ -49,6 +49,7 @@ codews status
 
 # 检查当前目录是否严格符合某个环境配置（跨分支校验、缺漏校验、Hash比对）
 codews status -e <env_name>
+# 完全匹配时退出码为 0；缺仓、脏仓、版本不匹配或状态读取失败时退出码为 1
 ```
 
 ## 配置寻址与全局使用指南 (Local > Global)

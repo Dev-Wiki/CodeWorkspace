@@ -86,7 +86,10 @@ function run(argv) {
                 }
                 const workspace = getResolvedWorkspace(configResult);
                 adjustWorkspaceRoot(workspace);
-                statusWorkspace(workspace);
+                const isMatching = statusWorkspace(workspace);
+                if (!isMatching) {
+                    process.exitCode = 1;
+                }
             } else {
                 statusWorkspace(null);
             }

@@ -386,9 +386,11 @@ function statusWorkspace(workspace = null) {
     if (workspace) {
         console.log(`Checking status against environment: ${workspace.name}\n`);
         const repoEntries = resolveWorkspaceRepoEntries(workspace);
+        let allMatching = true;
         for (const { repoName, config, repoPath } of repoEntries) {
             if (!fs.existsSync(repoPath)) {
                 console.log(`${repoName.padEnd(20)} [MISSING]  Not cloned yet`);
+                allMatching = false;
                 continue;
             }
             try {
@@ -400,22 +402,35 @@ function statusWorkspace(workspace = null) {
                 
                 const dirty = getRealDirtyStatus(repoPath);
                 const statusStr = dirty.length > 0 ? '[DIRTY]' : '[CLEAN]';
+                if (dirty.length > 0) {
+                    allMatching = false;
+                }
                 
                 let branchStr = "";
                 if (config.commit) {
                     const shortHead = headCommit.substring(0, 7);
                     const shortExpected = config.commit.substring(0, 7);
-                    branchStr = headCommit.startsWith(config.commit) ? `Commit: ${shortHead}` : `Commit: ${shortHead} (Expected: ${shortExpected})`;
+                    const commitMatches = headCommit.startsWith(config.commit);
+                    branchStr = commitMatches ? `Commit: ${shortHead}` : `Commit: ${shortHead} (Expected: ${shortExpected})`;
+                    if (!commitMatches) {
+                        allMatching = false;
+                    }
                 } else {
                     const expected = config.branch;
-                    branchStr = branch === expected ? `Branch: ${branch}` : `Branch: ${branch || 'Detached'} (Expected: ${expected})`;
+                    const branchMatches = branch === expected;
+                    branchStr = branchMatches ? `Branch: ${branch}` : `Branch: ${branch || 'Detached'} (Expected: ${expected})`;
+                    if (!branchMatches) {
+                        allMatching = false;
+                    }
                 }
                 
                 console.log(`${repoName.padEnd(20)} ${statusStr.padEnd(9)} ${branchStr}`);
             } catch (err) {
                 console.log(`${repoName.padEnd(20)} [ERROR]    Failed to check git status`);
+                allMatching = false;
             }
         }
+        return allMatching;
     } else {
         console.log(`Scanning current directory for Git repositories...\n`);
         const currentDir = process.cwd();
