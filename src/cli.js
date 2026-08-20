@@ -66,6 +66,10 @@ function run(argv) {
                 printSwitchSummary(workspace);
             } catch (err) {
                 console.error('Switch failed:', err.message);
+                if (err.recoveryReport) {
+                    console.error('Switch recovery report:');
+                    console.error(JSON.stringify(err.recoveryReport, null, 2));
+                }
                 process.exit(1);
             }
         });

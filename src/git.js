@@ -1,4 +1,4 @@
-const { execSync } = require('child_process');
+const { execFileSync, execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
@@ -16,6 +16,122 @@ function runCommand(cmd, cwd, streamOutput = false) {
         return result ? result.trim() : '';
     } catch (err) {
         throw new Error(`Command failed: ${cmd}\nIn directory: ${cwd}\nError: ${err.stderr || err.message}`);
+    }
+}
+
+function runGitCommand(args, cwd) {
+    try {
+        const result = execFileSync('git', args, {
+            cwd,
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'pipe']
+        });
+        return result ? result.trim() : '';
+    } catch (err) {
+        const command = ['git', ...args].map(value => JSON.stringify(value)).join(' ');
+        throw new Error(
+            `Command failed: ${command}\nIn directory: ${cwd}\nError: ${err.stderr || err.message}`
+        );
+    }
+}
+
+function captureRepositorySnapshot(repoPath) {
+    if (!fs.existsSync(repoPath)) {
+        return { existed: false };
+    }
+
+    return {
+        existed: true,
+        realPath: fs.realpathSync(repoPath),
+        head: runGitCommand(['rev-parse', 'HEAD'], repoPath),
+        branch: runGitCommand(['branch', '--show-current'], repoPath),
+        dirtyStatus: getRealDirtyStatus(repoPath)
+    };
+}
+
+function buildRecoveryActions(record) {
+    if (!record.snapshot.existed) {
+        return [{ type: 'remove-directory', path: record.repoPath }];
+    }
+
+    const checkoutArgs = record.snapshot.branch
+        ? ['checkout', record.snapshot.branch]
+        : ['checkout', '--detach', record.snapshot.head];
+    return [
+        { type: 'git', cwd: record.repoPath, args: checkoutArgs },
+        { type: 'git', cwd: record.repoPath, args: ['reset', '--hard', record.snapshot.head] }
+    ];
+}
+
+function rollbackRepository(record) {
+    const action = record.snapshot.existed
+        ? 'restore-existing-repository'
+        : 'remove-new-repository';
+    const recoveryActions = buildRecoveryActions(record);
+    const result = {
+        repoName: record.repoName,
+        repoPath: record.repoPath,
+        action,
+        status: 'restored',
+        recoveryActions,
+        executedHooks: record.executedHooks
+    };
+
+    if (record.snapshot.dirtyStatus) {
+        result.status = 'manual-recovery-required';
+        result.recoveryActions = [];
+        result.reason = 'Pre-existing changes detected; automatic destructive recovery was withheld.';
+        result.originalStatus = record.snapshot.dirtyStatus;
+        return result;
+    }
+
+    try {
+        if (record.snapshot.existed
+            && fs.realpathSync(record.repoPath) !== record.snapshot.realPath) {
+            throw new Error(
+                `Repository path changed during switch: ${JSON.stringify(record.repoPath)}`
+            );
+        }
+
+        for (const recoveryAction of recoveryActions) {
+            if (recoveryAction.type === 'remove-directory') {
+                if (fs.existsSync(recoveryAction.path)) {
+                    fs.rmSync(recoveryAction.path, { recursive: true, force: true });
+                }
+            } else {
+                runGitCommand(recoveryAction.args, recoveryAction.cwd);
+            }
+        }
+
+        if (record.snapshot.existed) {
+            const residualStatus = getRealDirtyStatus(record.repoPath);
+            if (residualStatus) {
+                result.status = 'manual-recovery-required';
+                result.residualStatus = residualStatus;
+            }
+        }
+    } catch (err) {
+        result.status = 'failed';
+        result.error = err.message;
+    }
+
+    return result;
+}
+
+function rollbackWorkspace(records) {
+    return records.slice().reverse().map(rollbackRepository);
+}
+
+class WorkspaceSwitchError extends Error {
+    constructor(failedRepository, cause, rollbackResults) {
+        super(`Repository ${JSON.stringify(failedRepository)} failed: ${cause.message}`);
+        this.name = 'WorkspaceSwitchError';
+        this.code = 'WORKSPACE_SWITCH_FAILED';
+        this.recoveryReport = {
+            failedRepository,
+            originalError: cause.message,
+            rollbackResults
+        };
     }
 }
 
@@ -136,103 +252,123 @@ async function checkDirty(workspace, options = {}) {
 async function checkoutWorkspace(workspace, options = {}) {
     const reposEntries = resolveWorkspaceRepoEntries(workspace);
     const total = reposEntries.length;
+    const mutationRecords = [];
+    let currentRepository = null;
     let index = 0;
 
-    for (const { repoName, config, repoPath } of reposEntries) {
-        index++;
-        const branch = config.branch;
-        const commit = config.commit;
-        const url = config.url;
-        let depth = config.depth !== undefined ? config.depth : (commit ? 0 : 1);
-        if (options.full) depth = 0;
+    try {
+        for (const { repoName, config, repoPath } of reposEntries) {
+            currentRepository = repoName;
+            index++;
+            const branch = config.branch;
+            const commit = config.commit;
+            const url = config.url;
+            let depth = config.depth !== undefined ? config.depth : (commit ? 0 : 1);
+            if (options.full) depth = 0;
 
-        if (commit && config.depth !== undefined && depth > 0) {
-            if (process.stdout.isTTY && !process.env.CI) {
-                console.warn(`\n[WARNING] 仓库 ${repoName} 同时指定了具体 commit 与 depth:${config.depth}，这极易导致克隆后找不到历史树。`);
-                let ans = '';
-                while (!['1', '2', '3'].includes(ans)) {
-                    ans = await promptUser(`请选择处理方式：\n[1] 尝试精准浅拉取（若远端拒绝则自动转全量）(强烈推荐)\n[2] 放弃浅拉取，直接走全量克隆 (最保守)\n[3] 终止操作\n请输入 1/2/3: `);
-                    ans = ans.trim();
-                }
-                if (ans === '1') {
-                    depth = 'targeted';
-                } else if (ans === '2') {
+            if (commit && config.depth !== undefined && depth > 0) {
+                if (process.stdout.isTTY && !process.env.CI) {
+                    console.warn(`\n[WARNING] 仓库 ${repoName} 同时指定了具体 commit 与 depth:${config.depth}，这极易导致克隆后找不到历史树。`);
+                    let ans = '';
+                    while (!['1', '2', '3'].includes(ans)) {
+                        ans = await promptUser(`请选择处理方式：\n[1] 尝试精准浅拉取（若远端拒绝则自动转全量）(强烈推荐)\n[2] 放弃浅拉取，直接走全量克隆 (最保守)\n[3] 终止操作\n请输入 1/2/3: `);
+                        ans = ans.trim();
+                    }
+                    if (ans === '1') {
+                        depth = 'targeted';
+                    } else if (ans === '2') {
+                        depth = 0;
+                    } else if (ans === '3') {
+                        throw new Error('User aborted.');
+                    }
+                } else {
+                    console.warn(`[WARNING] 非交互环境：检测到 ${repoName} 存在冲突配置 (commit + depth>0)，自动降级为全量克隆以保安全。`);
                     depth = 0;
-                } else if (ans === '3') {
-                    throw new Error('User aborted.');
                 }
-            } else {
-                console.warn(`[WARNING] 非交互环境：检测到 ${repoName} 存在冲突配置 (commit + depth>0)，自动降级为全量克隆以保安全。`);
-                depth = 0;
             }
-        }
 
-        console.log(`[${index}/${total}] Processing ${repoName}...`);
+            console.log(`[${index}/${total}] Processing ${repoName}...`);
 
-        if (!fs.existsSync(repoPath)) {
-            if (!url) {
+            if (!fs.existsSync(repoPath) && !url) {
                 console.warn(`[WARN] Skipping ${repoName} - directory does not exist and no URL provided.`);
                 continue;
             }
-            console.log(`Cloning ${repoName}...`);
-            // Ensure parent directory exists
-            fs.mkdirSync(path.dirname(repoPath), { recursive: true });
 
-            if (depth === 'targeted') {
-                runCommand('git init', repoPath);
-                runCommand(`git remote add origin ${url}`, repoPath);
-                try {
-                    console.log(`Attempting targeted shallow fetch for commit ${commit}...`);
-                    runCommand(`git fetch --depth 1 origin ${commit}`, repoPath, true);
+            const mutationRecord = {
+                repoName,
+                repoPath,
+                snapshot: captureRepositorySnapshot(repoPath),
+                executedHooks: []
+            };
+            mutationRecords.push(mutationRecord);
+
+            if (!mutationRecord.snapshot.existed) {
+                console.log(`Cloning ${repoName}...`);
+                // Ensure parent directory exists
+                fs.mkdirSync(path.dirname(repoPath), { recursive: true });
+
+                if (depth === 'targeted') {
+                    runCommand('git init', repoPath);
+                    runCommand(`git remote add origin ${url}`, repoPath);
+                    try {
+                        console.log(`Attempting targeted shallow fetch for commit ${commit}...`);
+                        runCommand(`git fetch --depth 1 origin ${commit}`, repoPath, true);
+                        runCommand(`git checkout ${commit}`, repoPath);
+                        continue;
+                    } catch (e) {
+                        console.warn(`[WARN] 服务端拒绝了精确游离拉取，开始执行全量兜底...`);
+                        fs.rmSync(repoPath, { recursive: true, force: true });
+                        fs.mkdirSync(path.dirname(repoPath), { recursive: true });
+                        depth = 0;
+                    }
+                }
+
+                const branchArg = branch ? ` -b ${branch}` : '';
+                const cloneCmd = depth > 0
+                    ? `git clone --depth ${depth} --single-branch --no-tags ${url}${branchArg} ${path.basename(repoPath)}`
+                    : `git clone ${url}${branchArg} ${path.basename(repoPath)}`;
+                runCommand(cloneCmd, path.dirname(repoPath), true);
+                if (commit) {
+                    console.log(`Checking out specific commit ${commit} in ${repoName}...`);
                     runCommand(`git checkout ${commit}`, repoPath);
-                    continue;
-                } catch (e) {
-                    console.warn(`[WARN] 服务端拒绝了精确游离拉取，开始执行全量兜底...`);
-                    fs.rmSync(repoPath, { recursive: true, force: true });
-                    fs.mkdirSync(path.dirname(repoPath), { recursive: true });
-                    depth = 0;
+                }
+            } else {
+                const target = commit ? commit : branch;
+                console.log(`Fetching and checking out ${target} in ${repoName}...`);
+
+                if (!commit) {
+                    try {
+                        // 为了防止该仓库是以 --single-branch 克隆的，在此显式将目标分支加入 fetch 列表
+                        runCommand(`git remote set-branches --add origin ${target}`, repoPath, true);
+                    } catch(e) {}
+                }
+
+                runCommand('git fetch origin', repoPath, true);
+                runCommand(`git checkout ${target}`, repoPath);
+
+                if (!commit) {
+                    try {
+                        runCommand('git pull', repoPath, true);
+                    } catch(e) {
+                        console.warn(`[WARN] git pull failed for ${repoName} (might be detached or not tracking upstream)`);
+                    }
                 }
             }
 
-            const branchArg = branch ? ` -b ${branch}` : '';
-            const cloneCmd = depth > 0 
-                ? `git clone --depth ${depth} --single-branch --no-tags ${url}${branchArg} ${path.basename(repoPath)}`
-                : `git clone ${url}${branchArg} ${path.basename(repoPath)}`;
-            runCommand(cloneCmd, path.dirname(repoPath), true);
-            if (commit) {
-                console.log(`Checking out specific commit ${commit} in ${repoName}...`);
-                runCommand(`git checkout ${commit}`, repoPath);
-            }
-        } else {
-            const target = commit ? commit : branch;
-            console.log(`Fetching and checking out ${target} in ${repoName}...`);
-            
-            if (!commit) {
-                try {
-                    // 为了防止该仓库是以 --single-branch 克隆的，在此显式将目标分支加入 fetch 列表
-                    runCommand(`git remote set-branches --add origin ${target}`, repoPath, true);
-                } catch(e) {}
-            }
-            
-            runCommand('git fetch origin', repoPath, true);
-            runCommand(`git checkout ${target}`, repoPath);
-            
-            if (!commit) {
-                try {
-                    runCommand('git pull', repoPath, true);
-                } catch(e) {
-                    console.warn(`[WARN] git pull failed for ${repoName} (might be detached or not tracking upstream)`);
+            if (config.post_hooks && config.post_hooks.length > 0) {
+                console.log(`Running post_hooks for ${repoName}...`);
+                for (const hook of config.post_hooks) {
+                    console.log(`  > ${hook}`);
+                    const hookResult = { command: hook, status: 'failed' };
+                    mutationRecord.executedHooks.push(hookResult);
+                    runCommand(hook, repoPath);
+                    hookResult.status = 'completed';
                 }
             }
         }
-
-        if (config.post_hooks && config.post_hooks.length > 0) {
-            console.log(`Running post_hooks for ${repoName}...`);
-            for (const hook of config.post_hooks) {
-                console.log(`  > ${hook}`);
-                runCommand(hook, repoPath);
-            }
-        }
+    } catch (err) {
+        const rollbackResults = rollbackWorkspace(mutationRecords);
+        throw new WorkspaceSwitchError(currentRepository, err, rollbackResults);
     }
 }
 
@@ -332,4 +468,10 @@ function printSwitchSummary(workspace) {
     console.log('--------------------------------\n');
 }
 
-module.exports = { checkDirty, checkoutWorkspace, statusWorkspace, printSwitchSummary };
+module.exports = {
+    WorkspaceSwitchError,
+    checkDirty,
+    checkoutWorkspace,
+    statusWorkspace,
+    printSwitchSummary
+};
