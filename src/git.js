@@ -194,9 +194,10 @@ async function checkoutWorkspace(workspace, options = {}) {
                 }
             }
 
+            const branchArg = branch ? ` -b ${branch}` : '';
             const cloneCmd = depth > 0 
-                ? `git clone --depth ${depth} --single-branch --no-tags ${url} -b ${branch} ${path.basename(repoPath)}`
-                : `git clone ${url} -b ${branch} ${path.basename(repoPath)}`;
+                ? `git clone --depth ${depth} --single-branch --no-tags ${url}${branchArg} ${path.basename(repoPath)}`
+                : `git clone ${url}${branchArg} ${path.basename(repoPath)}`;
             runCommand(cloneCmd, path.dirname(repoPath), true);
             if (commit) {
                 console.log(`Checking out specific commit ${commit} in ${repoName}...`);
