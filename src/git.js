@@ -215,11 +215,15 @@ async function checkDirty(workspace, options = {}) {
         if (!fs.existsSync(repoPath)) {
             continue; // Not cloned yet, so it can't be dirty
         }
+        let operation = 'check status';
         try {
             if (options.force) {
                 console.log(`[FORCE] Hard resetting and cleaning ${repoName}...`);
+                operation = 'reset tracked files';
                 runGitCommand(['reset', '--hard'], repoPath);
+                operation = 'clean untracked and ignored files';
                 runGitCommand(['clean', '-xdf'], repoPath);
+                operation = 'verify status after forced cleanup';
                 const newStatus = getRealDirtyStatus(repoPath);
                 if (newStatus.length > 0) {
                     console.error(`[ERROR] Failed to completely clean ${repoName}:\n${newStatus}`);
@@ -232,9 +236,11 @@ async function checkDirty(workspace, options = {}) {
             if (status.length > 0) {
                 if (options.stash) {
                     console.log(`[STASH] Auto-stashing changes in ${repoName}...`);
+                    operation = 'stash changes';
                     runGitCommand([
                         'stash', 'push', '-u', '-m', 'codews auto stash before switch'
                     ], repoPath);
+                    operation = 'verify status after stashing';
                     const newStatus = getRealDirtyStatus(repoPath);
                     if (newStatus.length > 0) {
                         console.error(`[ERROR] Failed to completely stash ${repoName}:\n${newStatus}`);
@@ -242,11 +248,15 @@ async function checkDirty(workspace, options = {}) {
                     }
                 } else {
                     console.error(`[DIRTY] Repository ${repoName} at ${repoPath} has uncommitted changes:\n${status}`);
+                    console.error('Please commit or stash your changes before switching.');
                     allClean = false;
                 }
             }
         } catch (err) {
-            console.error(`[ERROR] Failed to check status for ${repoName}: ${err.message}`);
+            console.error(`[ERROR] Failed to ${operation} for ${repoName}: ${err.message}`);
+            if (operation === 'clean untracked and ignored files') {
+                console.error('[HINT] Files may be in use or not removable. Close any IDE (e.g. DevEco Studio) and indexing processes using this repository, check file permissions, and retry.');
+            }
             allClean = false;
         }
     }

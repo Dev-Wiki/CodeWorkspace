@@ -56,7 +56,12 @@ function run(argv) {
                 console.log('Validating workspace status...');
                 const isClean = await checkDirty(workspace, options);
                 if (!isClean) {
-                    console.error('Error: Working tree is dirty. Please commit or stash your changes before switching.');
+                    const reason = options.force
+                        ? 'Forced workspace cleanup failed'
+                        : options.stash
+                            ? 'Automatic stashing failed or workspace status could not be verified'
+                            : 'Workspace validation failed';
+                    console.error(`Error: ${reason}. Switch aborted. Resolve the repository errors above and retry.`);
                     process.exit(1);
                 }
 

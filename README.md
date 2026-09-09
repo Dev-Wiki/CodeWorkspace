@@ -35,7 +35,7 @@ codews list
 # 切换工作区到指定的配置
 codews switch <env_name> [--stash] [--force] [--full]
 # --stash: 遇到未提交的代码自动静默执行 git stash
-# --force: 暴力覆盖，遇到未提交代码直接 git reset --hard 丢弃
+# --force: 执行 git reset --hard 和 git clean -xdf，丢弃已跟踪文件的修改并删除未跟踪及被忽略的文件
 # --full: 全局覆写深度，强制所有仓库（无视 JSON 配置）走 depth=0 全量深克隆
 # *注：切换成功后，会自动输出各仓库的当前分支、最新 Commit Hash 及提交消息概览。*
 # *注：切换失败后，会自动补偿已触及的 Git 工作区并输出 Switch recovery report。*
@@ -51,6 +51,9 @@ codews status
 codews status -e <env_name>
 # 完全匹配时退出码为 0；缺仓、脏仓、版本不匹配或状态读取失败时退出码为 1
 ```
+
+`--force` 清理失败时会中止切换，并显示失败的仓库、具体操作和 Git 原始错误。
+若提示文件无法删除，可先关闭占用该仓库文件的 IDE（如 DevEco Studio）及索引进程，检查文件权限后重试。
 
 ## 配置寻址与全局使用指南 (Local > Global)
 
