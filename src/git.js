@@ -61,7 +61,7 @@ function buildRecoveryActions(record) {
         : ['checkout', '--detach', record.snapshot.head];
     return [
         { type: 'git', cwd: record.repoPath, args: checkoutArgs },
-        { type: 'git', cwd: record.repoPath, args: ['reset', '--hard', record.snapshot.head] }
+        { type: 'git', cwd: record.repoPath, args: ['reset', '--hard', '--no-recurse-submodules', record.snapshot.head] }
     ];
 }
 
@@ -93,6 +93,10 @@ function rollbackRepository(record) {
             throw new Error(
                 `Repository path changed during switch: ${JSON.stringify(record.repoPath)}`
             );
+        }
+        if (record.snapshot.existed) {
+            validateRepositoryRoot(record);
+            validateChildPathOwnership(record, record.snapshot.head);
         }
 
         for (const recoveryAction of recoveryActions) {
@@ -137,8 +141,20 @@ class WorkspaceSwitchError extends Error {
     }
 }
 
-function getRealDirtyStatus(repoPath) {
-    const status = runGitCommand(['status', '--porcelain'], repoPath);
+function getRealDirtyStatus(repoPath, childPaths = []) {
+    const args = ['status', '--porcelain'];
+    if (childPaths.length > 0) {
+        args.push('--untracked-files=all', '--', '.',
+            ...childPaths.map(child => `:(exclude,literal)${child}`));
+    }
+    let status = runGitCommand(args, repoPath);
+    if (childPaths.length > 0) {
+        // Staged gitlink changes belong to the parent index, even though the
+        // child working tree is checked separately.
+        const staged = runGitCommand(['diff', '--cached', '--name-status', '--',
+            ...childPaths.map(child => `:(literal)${child}`)], repoPath);
+        if (staged) status += `\n[INDEX] ${staged}`;
+    }
     if (!status) return "";
     const statusLines = status.split('\n').filter(line => line.trim().length > 0);
     const realDirtyLines = statusLines.filter(line => {
@@ -184,7 +200,7 @@ function resolveWorkspaceRepoEntries(workspace) {
     }
     const canonicalWorkspaceRoot = fs.realpathSync(resolvedWorkspaceRoot);
 
-    return Object.entries(workspace.repos).map(([repoName, config]) => {
+    const entries = Object.entries(workspace.repos).map(([repoName, config]) => {
         const configuredPath = config.path || repoName;
         if (typeof configuredPath !== 'string') {
             throw new Error(`Repository path for ${JSON.stringify(repoName)} must be a string.`);
@@ -206,12 +222,104 @@ function resolveWorkspaceRepoEntries(workspace) {
 
         return { repoName, config, repoPath };
     });
+
+    for (const entry of entries) {
+        entry.childPaths = entries
+            .map(child => path.relative(entry.repoPath, child.repoPath))
+            .filter(relative => relative && relative !== '..'
+                && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+            .map(relative => relative.split(path.sep).join('/'));
+    }
+    return entries;
+}
+
+function validateRepositoryRoot({ repoName, repoPath }) {
+    try {
+        const actualRoot = runGitCommand(['rev-parse', '--show-toplevel'], repoPath);
+        if (path.relative(fs.realpathSync(repoPath), fs.realpathSync(actualRoot)) !== '') {
+            throw new Error(`expected ${JSON.stringify(repoPath)}, Git reports ${JSON.stringify(actualRoot)}`);
+        }
+    } catch (err) {
+        throw new Error(`Repository ${JSON.stringify(repoName)} is not a valid Git worktree root: ${err.message}`);
+    }
+}
+
+function validateChildPathOwnership({ repoName, repoPath, childPaths }, revision = 'HEAD') {
+    if (childPaths.length === 0) return;
+    // Check both the committed tree and the index: reset --hard restores HEAD,
+    // including paths staged for deletion, and can overwrite a nested repository.
+    const ancestors = [...new Set(childPaths.flatMap(child => {
+        const parts = child.split('/');
+        return parts.slice(0, -1).map((part, index) => parts.slice(0, index + 1).join('/'));
+    }))];
+    // A tree at the child path already proves overlap. Avoid recursive full-tree
+    // output (and its subprocess buffer limit) for unrelated parent files.
+    const records = [
+        ...[...childPaths, ...ancestors].map(targetPath => runGitCommand([
+            'ls-tree', '-z', '--full-tree', revision, '--', targetPath
+        ], repoPath)),
+        runGitCommand(['ls-files', '--stage', '-z', '--',
+            ...childPaths.map(child => `:(literal)${child}`)], repoPath),
+        ...ancestors.map(ancestor => runGitCommand(['ls-files', '--stage', '-z', '--',
+            `:(literal)${ancestor}`, `:(exclude,literal)${ancestor}/`], repoPath))
+    ];
+    for (const record of records.flatMap(output => output.split('\0').filter(Boolean))) {
+        const tab = record.indexOf('\t');
+        const trackedPath = record.slice(tab + 1);
+        // A gitlink represents a submodule, not files owned by the parent.
+        if (record.startsWith('160000 ')) continue;
+        const conflict = childPaths.find(child => trackedPath === child
+            || trackedPath.startsWith(`${child}/`)
+            || (!record.startsWith('040000 ') && child.startsWith(`${trackedPath}/`)));
+        if (conflict) {
+            throw new Error(`Repository ${JSON.stringify(repoName)} has a tracked path conflict: `
+                + `${JSON.stringify(trackedPath)} overlaps configured child ${JSON.stringify(conflict)}.`);
+        }
+    }
+}
+
+function validateWorkspaceRepositories(entries) {
+    // Finish every read-only check before the first reset, stash, clone or checkout.
+    for (const entry of entries) {
+        if (fs.existsSync(entry.repoPath)) validateRepositoryRoot(entry);
+    }
+    for (const entry of entries) {
+        if (fs.existsSync(entry.repoPath)) validateChildPathOwnership(entry);
+    }
+}
+
+function validateCheckoutChildPaths(entry, target, isCommit) {
+    if (entry.childPaths.length === 0) return;
+    let remoteTree;
+    if (!isCommit) {
+        try {
+            remoteTree = runGitCommand(['rev-parse', '--verify', '--end-of-options',
+                `refs/remotes/origin/${target}^{tree}`], entry.repoPath);
+        } catch (err) {
+            // A local branch or tag need not have an origin tracking ref.
+        }
+    }
+    let targetTree;
+    try {
+        targetTree = runGitCommand(['rev-parse', '--verify', '--end-of-options',
+            `${target}^{tree}`], entry.repoPath);
+    } catch (err) {
+        if (!remoteTree) throw err;
+        // checkout can create a local tracking branch on its first use.
+        targetTree = remoteTree;
+    }
+    validateChildPathOwnership(entry, targetTree);
+    if (remoteTree && remoteTree !== targetTree) {
+        // A subsequent pull may advance an already existing local branch.
+        validateChildPathOwnership(entry, remoteTree);
+    }
 }
 
 async function checkDirty(workspace, options = {}) {
     let allClean = true;
     const repoEntries = resolveWorkspaceRepoEntries(workspace);
-    for (const { repoName, repoPath } of repoEntries) {
+    validateWorkspaceRepositories(repoEntries);
+    for (const { repoName, repoPath, childPaths } of repoEntries) {
         if (!fs.existsSync(repoPath)) {
             continue; // Not cloned yet, so it can't be dirty
         }
@@ -220,11 +328,17 @@ async function checkDirty(workspace, options = {}) {
             if (options.force) {
                 console.log(`[FORCE] Hard resetting and cleaning ${repoName}...`);
                 operation = 'reset tracked files';
-                runGitCommand(['reset', '--hard'], repoPath);
+                runGitCommand(['reset', '--hard', '--no-recurse-submodules'], repoPath);
                 operation = 'clean untracked and ignored files';
-                runGitCommand(['clean', '-xdf'], repoPath);
+                const cleanArgs = ['clean', '-xdf'];
+                for (const child of childPaths) {
+                    // -e uses ignore patterns, so quote pattern metacharacters and
+                    // anchor to this root. Keep the single -f protection as well.
+                    cleanArgs.push('-e', `/${child.replace(/[\\*?\[\]]/g, '\\$&')}/`);
+                }
+                runGitCommand(cleanArgs, repoPath);
                 operation = 'verify status after forced cleanup';
-                const newStatus = getRealDirtyStatus(repoPath);
+                const newStatus = getRealDirtyStatus(repoPath, childPaths);
                 if (newStatus.length > 0) {
                     console.error(`[ERROR] Failed to completely clean ${repoName}:\n${newStatus}`);
                     allClean = false;
@@ -232,7 +346,7 @@ async function checkDirty(workspace, options = {}) {
                 continue;
             }
 
-            const status = getRealDirtyStatus(repoPath);
+            const status = getRealDirtyStatus(repoPath, childPaths);
             if (status.length > 0) {
                 if (options.stash) {
                     console.log(`[STASH] Auto-stashing changes in ${repoName}...`);
@@ -241,7 +355,7 @@ async function checkDirty(workspace, options = {}) {
                         'stash', 'push', '-u', '-m', 'codews auto stash before switch'
                     ], repoPath);
                     operation = 'verify status after stashing';
-                    const newStatus = getRealDirtyStatus(repoPath);
+                    const newStatus = getRealDirtyStatus(repoPath, childPaths);
                     if (newStatus.length > 0) {
                         console.error(`[ERROR] Failed to completely stash ${repoName}:\n${newStatus}`);
                         allClean = false;
@@ -265,13 +379,15 @@ async function checkDirty(workspace, options = {}) {
 
 async function checkoutWorkspace(workspace, options = {}) {
     const reposEntries = resolveWorkspaceRepoEntries(workspace);
+    validateWorkspaceRepositories(reposEntries);
     const total = reposEntries.length;
     const mutationRecords = [];
     let currentRepository = null;
     let index = 0;
 
     try {
-        for (const { repoName, config, repoPath } of reposEntries) {
+        for (const entry of reposEntries) {
+            const { repoName, config, repoPath, childPaths } = entry;
             currentRepository = repoName;
             index++;
             const branch = config.branch;
@@ -308,9 +424,13 @@ async function checkoutWorkspace(workspace, options = {}) {
                 continue;
             }
 
+            // A previous parent checkout/clone or hook may have created this path.
+            if (fs.existsSync(repoPath)) validateRepositoryRoot(entry);
+
             const mutationRecord = {
                 repoName,
                 repoPath,
+                childPaths,
                 snapshot: captureRepositorySnapshot(repoPath),
                 executedHooks: []
             };
@@ -364,6 +484,7 @@ async function checkoutWorkspace(workspace, options = {}) {
                 }
 
                 runGitCommand(['fetch', 'origin'], repoPath, true);
+                validateCheckoutChildPaths(entry, target, Boolean(commit));
                 runGitCommand(['checkout', target], repoPath);
 
                 if (!commit) {

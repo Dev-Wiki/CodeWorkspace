@@ -24,6 +24,9 @@ function runSwitch(t, options, failure, status = '') {
                     : 'fatal: simulated Git failure';
                 throw error;
             }
+            if (args[0] === 'rev-parse' && args[1] === '--show-toplevel') {
+                return ${JSON.stringify(path.join(workspaceRoot, 'Repo'))};
+            }
             return args[0] === 'status' ? ${JSON.stringify(status)} : '';
         };
         const config = require('./src/config');
