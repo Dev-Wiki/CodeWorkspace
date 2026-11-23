@@ -141,7 +141,7 @@ class WorkspaceSwitchError extends Error {
     }
 }
 
-function getRealDirtyStatus(repoPath, childPaths = []) {
+function getRealDirtyStatus(repoPath, childPaths = [], preserveWorkspaceConfig = false) {
     const args = ['status', '--porcelain'];
     if (childPaths.length > 0) {
         args.push('--untracked-files=all', '--', '.',
@@ -160,6 +160,7 @@ function getRealDirtyStatus(repoPath, childPaths = []) {
     const realDirtyLines = statusLines.filter(line => {
         if (line.startsWith('?? ')) {
             const filePath = line.substring(3).trim();
+            if (preserveWorkspaceConfig && /^"?\.codews\//.test(filePath)) return false;
             const fullPath = path.resolve(repoPath, filePath);
             try {
                 if (fs.existsSync(path.join(fullPath, '.git'))) {
@@ -187,6 +188,14 @@ function canonicalizePotentialPath(targetPath) {
     }
 
     return path.resolve(fs.realpathSync(existingPath), ...missingSegments);
+}
+
+function getNestedRepositoryPaths(repoPath, repositoryPaths) {
+    return repositoryPaths
+        .map(child => path.relative(repoPath, child))
+        .filter(relative => relative && relative !== '..'
+            && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+        .map(relative => relative.split(path.sep).join('/'));
 }
 
 function resolveWorkspaceRepoEntries(workspace) {
@@ -223,12 +232,9 @@ function resolveWorkspaceRepoEntries(workspace) {
         return { repoName, config, repoPath };
     });
 
+    const repositoryPaths = entries.map(entry => entry.repoPath);
     for (const entry of entries) {
-        entry.childPaths = entries
-            .map(child => path.relative(entry.repoPath, child.repoPath))
-            .filter(relative => relative && relative !== '..'
-                && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
-            .map(relative => relative.split(path.sep).join('/'));
+        entry.childPaths = getNestedRepositoryPaths(entry.repoPath, repositoryPaths);
     }
     return entries;
 }
@@ -315,37 +321,55 @@ function validateCheckoutChildPaths(entry, target, isCommit) {
     }
 }
 
+function hardResetRepository(repoPath) {
+    runGitCommand(['reset', '--hard', '--no-recurse-submodules'], repoPath);
+}
+
+function forceCleanRepository({ repoName, repoPath, childPaths }, preserveWorkspaceConfig = false) {
+    let operation = 'reset tracked files';
+    try {
+        console.log(`[FORCE] Hard resetting and cleaning ${repoName}...`);
+        hardResetRepository(repoPath);
+        operation = 'clean untracked and ignored files';
+        const cleanArgs = ['clean', '-xdf'];
+        if (preserveWorkspaceConfig) cleanArgs.push('-e', '/.codews/');
+        for (const child of childPaths) {
+            // -e uses ignore patterns, so quote pattern metacharacters and
+            // anchor to this root. Keep the single -f protection as well.
+            cleanArgs.push('-e', `/${child.replace(/[\\*?\[\]]/g, '\\$&')}/`);
+        }
+        runGitCommand(cleanArgs, repoPath);
+        operation = 'verify status after forced cleanup';
+        const newStatus = getRealDirtyStatus(repoPath, childPaths, preserveWorkspaceConfig);
+        if (newStatus) {
+            console.error(`[ERROR] Failed to completely clean ${repoName}:\n${newStatus}`);
+            return false;
+        }
+        return true;
+    } catch (err) {
+        console.error(`[ERROR] Failed to ${operation} for ${repoName}: ${err.message}`);
+        if (operation === 'clean untracked and ignored files') {
+            console.error('[HINT] Files may be in use or not removable. Close any IDE (e.g. DevEco Studio) and indexing processes using this repository, check file permissions, and retry.');
+        }
+        return false;
+    }
+}
+
 async function checkDirty(workspace, options = {}) {
     let allClean = true;
     const repoEntries = resolveWorkspaceRepoEntries(workspace);
     validateWorkspaceRepositories(repoEntries);
-    for (const { repoName, repoPath, childPaths } of repoEntries) {
+    for (const entry of repoEntries) {
+        const { repoName, repoPath, childPaths } = entry;
         if (!fs.existsSync(repoPath)) {
             continue; // Not cloned yet, so it can't be dirty
         }
+        if (options.force) {
+            if (!forceCleanRepository(entry)) allClean = false;
+            continue;
+        }
         let operation = 'check status';
         try {
-            if (options.force) {
-                console.log(`[FORCE] Hard resetting and cleaning ${repoName}...`);
-                operation = 'reset tracked files';
-                runGitCommand(['reset', '--hard', '--no-recurse-submodules'], repoPath);
-                operation = 'clean untracked and ignored files';
-                const cleanArgs = ['clean', '-xdf'];
-                for (const child of childPaths) {
-                    // -e uses ignore patterns, so quote pattern metacharacters and
-                    // anchor to this root. Keep the single -f protection as well.
-                    cleanArgs.push('-e', `/${child.replace(/[\\*?\[\]]/g, '\\$&')}/`);
-                }
-                runGitCommand(cleanArgs, repoPath);
-                operation = 'verify status after forced cleanup';
-                const newStatus = getRealDirtyStatus(repoPath, childPaths);
-                if (newStatus.length > 0) {
-                    console.error(`[ERROR] Failed to completely clean ${repoName}:\n${newStatus}`);
-                    allClean = false;
-                }
-                continue;
-            }
-
             const status = getRealDirtyStatus(repoPath, childPaths);
             if (status.length > 0) {
                 if (options.stash) {
@@ -368,9 +392,6 @@ async function checkDirty(workspace, options = {}) {
             }
         } catch (err) {
             console.error(`[ERROR] Failed to ${operation} for ${repoName}: ${err.message}`);
-            if (operation === 'clean untracked and ignored files') {
-                console.error('[HINT] Files may be in use or not removable. Close any IDE (e.g. DevEco Studio) and indexing processes using this repository, check file permissions, and retry.');
-            }
             allClean = false;
         }
     }
@@ -540,6 +561,116 @@ function findGitRepositories(rootPath) {
     return repositories;
 }
 
+function verifyNoGitOperation(repoPath) {
+    const gitDir = runGitCommand(['rev-parse', '--absolute-git-dir'], repoPath);
+    const operationMarkers = [
+        'MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-apply',
+        'rebase-merge', 'sequencer', 'BISECT_START'
+    ];
+    if (operationMarkers.some(marker => fs.existsSync(path.join(gitDir, marker)))) {
+        throw new Error('A Git operation is in progress. Finish or abort it before pulling.');
+    }
+}
+
+function pullRepository(entry, { force }) {
+    const { repoName, repoPath, childPaths } = entry;
+    verifyNoGitOperation(repoPath);
+    const branch = runGitCommand(['branch', '--show-current'], repoPath);
+    if (!branch) throw new Error('HEAD is detached. Check out a branch before pulling.');
+    const head = runGitCommand(['rev-parse', '--verify', 'HEAD'], repoPath);
+    const branchRef = `refs/heads/${branch}`;
+    const [upstream, remote, remoteRef] = runGitCommand([
+        'for-each-ref', '--format=%(upstream)%09%(upstream:remotename)%09%(upstream:remoteref)', '--', branchRef
+    ], repoPath).split('\t');
+    if (!upstream || !remote || !remoteRef) {
+        throw new Error(`Branch ${JSON.stringify(branch)} has no upstream. Set a tracking branch before pulling.`);
+    }
+    validateChildPathOwnership(entry, head);
+    if (!force) {
+        const dirty = getRealDirtyStatus(repoPath, childPaths, true);
+        if (dirty) throw new Error(`Uncommitted changes. Commit or stash them before pulling.\n${dirty}`);
+    }
+
+    console.log(`[PULL] ${repoName} (${branch}) <- ${upstream}`);
+    if (remote !== '.') runGitCommand(['fetch', '--no-recurse-submodules', '--', remote, remoteRef], repoPath);
+    const target = runGitCommand(['rev-parse', '--verify', '--end-of-options', `${upstream}^{commit}`], repoPath);
+    const [ahead, behind] = runGitCommand([
+        'rev-list', '--left-right', '--count', `${head}...${target}`
+    ], repoPath).split(/\s+/).map(Number);
+    if (ahead && behind) {
+        throw new Error(`Branch ${JSON.stringify(branch)} and its upstream have diverged (${ahead} ahead, ${behind} behind).`);
+    }
+    if (behind) validateChildPathOwnership(entry, target);
+
+    // Fetch can take time. Do not clean or merge a different branch or worktree.
+    if (fs.realpathSync(repoPath) !== repoPath
+        || runGitCommand(['branch', '--show-current'], repoPath) !== branch
+        || runGitCommand(['rev-parse', '--verify', 'HEAD'], repoPath) !== head) {
+        throw new Error('The worktree path or HEAD changed during fetch. Retry the pull.');
+    }
+    verifyNoGitOperation(repoPath);
+    if (force && !forceCleanRepository(entry, true)) return false;
+
+    if (behind) {
+        runGitCommand([
+            '-c', 'submodule.recurse=false', 'merge', '--ff-only', '--no-squash',
+            '--no-autostash', '--no-overwrite-ignore', '--', target
+        ], repoPath);
+        console.log(`[UPDATED] ${repoName} (${branch}) ${head.slice(0, 7)} -> ${target.slice(0, 7)}`);
+    } else {
+        const detail = ahead ? `ahead by ${ahead} commit(s)` : 'up to date';
+        console.log(`[OK] ${repoName} (${branch}) ${detail}`);
+    }
+    return true;
+}
+
+function runWorkspaceOperation(workspace, env, operation, runRepository) {
+    const root = fs.realpathSync(workspace ? workspace.workspaceRoot : process.cwd());
+    const discoveredPaths = findGitRepositories(root);
+    const entries = workspace ? resolveWorkspaceRepoEntries(workspace) : discoveredPaths.map(repoPath => ({
+        repoPath,
+        repoName: path.relative(root, repoPath) || path.basename(root)
+    }));
+    const selected = [...new Map(entries.map(entry => [entry.repoPath, entry])).values()];
+    if (selected.length === 0) throw new Error(`No repositories selected in ${root}.`);
+    const repositoryPaths = [...new Set([...discoveredPaths, ...selected.map(entry => entry.repoPath)])];
+
+    const scope = env ? `${root} (environment: ${env})` : root;
+    console.log(`${operation} for ${selected.length} repositories in ${scope}`);
+    let succeeded = 0;
+    for (const entry of selected) {
+        entry.childPaths = getNestedRepositoryPaths(entry.repoPath, repositoryPaths);
+        try {
+            if (!fs.existsSync(entry.repoPath)) throw new Error('Repository is missing.');
+            if (fs.realpathSync(entry.repoPath) !== entry.repoPath) {
+                throw new Error('The worktree path changed after repository discovery.');
+            }
+            validateRepositoryRoot(entry);
+            if (runRepository(entry)) succeeded++;
+        } catch (err) {
+            console.error(`[ERROR] ${entry.repoName} (${entry.repoPath}): ${err.message}`);
+        }
+    }
+    const failed = selected.length - succeeded;
+    console.log(`${operation} completed: ${succeeded} succeeded, ${failed} failed.`);
+    return failed === 0;
+}
+
+function pullWorkspace(workspace = null, options = {}) {
+    return runWorkspaceOperation(workspace, options.env, 'Pull', entry => pullRepository(entry, options));
+}
+
+function resetWorkspace(workspace = null, options = {}) {
+    return runWorkspaceOperation(workspace, options.env, 'Reset', entry => {
+        const { repoName, repoPath } = entry;
+        const head = runGitCommand(['rev-parse', '--verify', 'HEAD'], repoPath);
+        validateChildPathOwnership(entry, head);
+        hardResetRepository(repoPath);
+        console.log(`[RESET] ${repoName} to ${head.slice(0, 7)}`);
+        return true;
+    });
+}
+
 function statusWorkspace(workspace = null, currentDir = process.cwd()) {
     if (workspace) {
         console.log(`Checking status against environment: ${workspace.name}\n`);
@@ -646,6 +777,8 @@ module.exports = {
     WorkspaceSwitchError,
     checkDirty,
     checkoutWorkspace,
+    pullWorkspace,
+    resetWorkspace,
     statusWorkspace,
     printSwitchSummary
 };

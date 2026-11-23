@@ -34,7 +34,7 @@ Node.js CommonJS command-line application
 复杂项目可为同一 Purpose 维护多条已确认记录。每条记录使用 `Purpose / Command / WorkingDirectory / Platform / Variant / Preconditions / DeviceRequirement / Shell / Environment / Evidence / Status`；简单项目继续使用上面的单值字段。
 
 ## 高风险目录
-- `src/`: contains all configuration parsing, filesystem path derivation, subprocess invocation, and destructive repository-switch behavior
+- `src/`: contains configuration parsing, filesystem path derivation, subprocess invocation, and destructive workspace operations
 
 ## 禁改区域
 - bin: generated build outputs
@@ -43,7 +43,6 @@ Node.js CommonJS command-line application
 ## 自动识别候选
 - No automated test entry is available; package.json contains only a failing placeholder test script.
 - Configuration-controlled post_hooks are executed through the shell in each repository working directory.
-- Version 1.2.0 is duplicated between package metadata and CLI registration.
 
 ## 需人工确认
 - Confirm the trust model for local and global `.codews` files because repository URLs, revisions, paths, and post_hooks reach shell and filesystem boundaries.

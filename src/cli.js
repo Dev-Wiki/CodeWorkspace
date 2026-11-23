@@ -1,6 +1,7 @@
 const { Command } = require('commander');
+const { version } = require('../package.json');
 const { loadConfig, getResolvedWorkspace, listConfigs } = require('./config');
-const { checkDirty, checkoutWorkspace, statusWorkspace, printSwitchSummary } = require('./git');
+const { checkDirty, checkoutWorkspace, pullWorkspace, resetWorkspace, statusWorkspace, printSwitchSummary } = require('./git');
 const path = require('path');
 const fs = require('fs');
 
@@ -31,12 +32,29 @@ function adjustWorkspaceRoot(workspace) {
     }
 }
 
+function runWorkspaceAction(name, action, options) {
+    try {
+        let workspace = null;
+        if (options.env) {
+            const configResult = loadConfig(options.env);
+            if (!configResult) {
+                throw new Error(`Configuration for '${options.env}' not found.`);
+            }
+            workspace = getResolvedWorkspace(configResult);
+        }
+        if (action(workspace, options)) return;
+    } catch (err) {
+        console.error(`${name} failed:`, err.message);
+    }
+    process.exitCode = 1;
+}
+
 function run(argv) {
     const program = new Command();
     program
         .name('codews')
         .description('Workspace manager for multi-repo projects')
-        .version('1.2.0');
+        .version(version);
 
     program.command('switch <env>')
         .description('Switch workspace to a specific environment')
@@ -78,6 +96,18 @@ function run(argv) {
                 process.exit(1);
             }
         });
+
+    program.command('pull')
+        .description('Fast-forward each repository on its current branch')
+        .option('-e, --env <env>', 'Use an environment configuration to select repositories')
+        .option('--force', 'Discard uncommitted changes and clean untracked and ignored files before updating')
+        .action(options => runWorkspaceAction('Pull', pullWorkspace, options));
+
+    program.command('reset')
+        .description('Restore each repository to its own current HEAD')
+        .option('-e, --env <env>', 'Use an environment configuration to select repositories')
+        .requiredOption('--hard', 'Discard staged and unstaged changes to tracked files')
+        .action(options => runWorkspaceAction('Reset', resetWorkspace, options));
 
     program.command('status')
         .description('Check git status for all repositories in the current workspace')

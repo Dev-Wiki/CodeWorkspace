@@ -29,8 +29,9 @@
 - **语言/框架**: JavaScript on Node.js using CommonJS modules and Commander.js for CLI command registration.
 - **架构模式**: Layered CLI orchestration: command handlers delegate environment discovery and inheritance to the configuration module, then delegate repository inspection and mutation to the Git module.
 - **核心入口**: bin/codews.js invokes src/cli.js run(process.argv).
-- **核心调用链**: CLI command -> loadConfig -> getResolvedWorkspace -> adjustWorkspaceRoot -> checkDirty -> checkoutWorkspace -> printSwitchSummary.
-- **版本识别依据**: Package version 1.2.0 is declared in package.json and repeated in the Commander CLI registration.
+- **切换调用链**为 `switch` -> `loadConfig` -> `getResolvedWorkspace` -> `adjustWorkspaceRoot` -> `checkDirty` -> `checkoutWorkspace` -> `printSwitchSummary`。
+- **批量操作**由 `runWorkspaceAction` 调用 `pullWorkspace` 或 `resetWorkspace`，再进入共用的 `runWorkspaceOperation`。
+- **版本号**由 Commander 从 `package.json` 读取。
 
 ## 1b. 文件信任等级
 
@@ -91,7 +92,6 @@ Start at the relevant Commander action in `src/cli.js`, follow configuration res
 
 - No automated test entry is available; package.json contains only a failing placeholder test script.
 - Configuration-controlled post_hooks are executed through the shell in each repository working directory.
-- Version 1.2.0 is duplicated between package metadata and CLI registration.
 
 ## 12. 需人工确认
 
